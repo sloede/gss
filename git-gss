@@ -1,0 +1,182 @@
+#!/bin/bash
+
+# (c) 2015 Michael Schlottke <michael.schlottke@sloede.com>
+#
+# This file is part of gss.
+#
+# gss is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# gss is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with gss.  If not, see <http://www.gnu.org/licenses/>.
+
+################################################################################
+# Configuration section
+################################################################################
+# FIXME: This should be configurable in git?
+
+# Branch name for svn tracking
+TRACKING_BRANCH_NAME="gss-sync"
+
+
+################################################################################
+# Program section - there is no need to change anything beyond this line
+################################################################################
+
+# Show usage and quit
+usage() {
+  cat >&2 << 'EOF'
+usage: git gss COMMAND [ARG [ARG1...]]
+
+Available commands: help, init, pull, push
+
+  help: Show information on usage.
+
+  init: Set up two-way synchronization with svn branch.
+    Requires svn branch name as argument.
+
+  pull: Pull changes in tracked branch from svn to git.
+
+  push: Commit "push" changes in tracked branch from git to svn.
+EOF
+
+  echo "$message" >&2
+
+  if [ -n "$1" ]; then
+    exit $1
+  else
+    exit 0
+  fi
+}
+
+# Execute command with parameters and quit if it failed
+exec_or_die() {
+  $*
+  if [ $? -ne 0 ]; then
+    echo "error in file $0, line ${BASH_LINENO[0]}: failed to execute '$@'" >&2
+    exit 1
+  fi
+}
+
+# Show help
+cmd_help() {
+  echo "help"
+}
+
+# Init two-way synchronization
+cmd_init() {
+  # Store svn repository path
+  if [ $# -lt 1 ]; then
+    echo "error: missing argument: svn repository url" >&2
+    usage 2
+  fi
+  svn_repo_url="$1"
+
+  # Store optional branch name without leading slash (defaults to "trunk")
+  svn_branch_name="trunk"
+  if [ $# -gt 1 ]; then
+    svn_branch_name="$2"
+  fi
+
+  # Prevent switching the branch if working directory/index is not clean
+  if [ -n "$(exec_or_die git status --porcelain)" ]; then
+    echo "error: uncommitted/unstaged/untracked files found:" >&2
+    git status --porcelain >&2
+    exit 1
+  fi
+
+  # Store current branch name
+  current_branch=$(exec_or_die git rev-parse --abbrev-ref HEAD)
+  echo $current_branch
+
+  # Create sync branch and switch to it
+  exec_or_die git checkout -b --no-track $TRACKING_BRANCH_NAME
+  exit
+
+  # Initialize tracking of svn branch
+  exec_or_die git svn init $svn_branch --prefix "git-svn/"
+
+  # Get svn commits
+  exec_or_die git svn fetch
+
+  # Reset branch to be exactly the same as the svn branch
+  exec_or_die git reset --hard remotes/
+
+  # Switch back to current branch
+  exec_or_die git checkout $current_branch
+}
+
+# Pull changes from svn to git
+cmd_pull() {
+  # Prevent switching the branch if working directory/index is not clean
+  if [ -n "$(exec_or_die git status --porcelain)" ]; then
+    echo "error: uncommitted/unstaged/untracked files found:" >&2
+    git status --porcelain >&2
+    exit 1
+  fi
+
+  # Store current branch name
+  current_branch=$(exec_or_die git rev-parse --abbrev-ref HEAD)
+
+  # Switch to sync branch
+  exec_or_die git checkout $TRACKING_BRANCH_NAME
+
+  # Update with changes from svn
+  exec_or_die git svn rebase
+
+  # Switch back to master
+  exec_or_die git checkout master
+
+  # Merge changes from sync branch
+  exec_or_die git merge $TRACKING_BRANCH_NAME
+
+  # Push changes to repository
+  exec_or_die git push origin master
+
+  # Switch back to current branch
+  exec_or_die git checkout $current_branch
+}
+
+# Push changes from git to svn & commit to svn repository
+cmd_push() {
+  echo "push"
+}
+
+# Check for command
+if [ -z "$1" ]; then
+  echo "error: missing command" >&2
+  usage 2
+fi
+
+# Parse command and execute correct method
+cmd="$1"
+shift
+case "$cmd" in
+  help)
+    cmd_help $*
+    ;;
+
+  init)
+    cmd_init $*
+    ;;
+
+  pull)
+    cmd_pull $*
+    ;;
+
+  push)
+    cmd_push $*
+    ;;
+
+  *)
+    echo "error: unrecognized command '$cmd'" >&2
+    usage 2
+    ;;
+esac
